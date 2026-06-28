@@ -3,7 +3,8 @@
  *
  * Los modelos están hardcodeados para mantener el arranque rápido.
  * Si quieres la lista dinámica como pi-commandcode-provider,
- */ import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+ */
+import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { getModelCost } from "./utils.js";
 
 function model(
@@ -11,12 +12,23 @@ function model(
   name: string,
   ctx: number,
   maxOut = 8192,
+  reasoning = false,
 ): ProviderModelConfig {
   const cost = getModelCost(id);
   return {
     id,
     name: `${name} (CleanCache)`,
-    reasoning: false,
+    reasoning,
+    thinkingLevelMap: reasoning
+      ? {
+          off: null,
+          minimal: "512",
+          low: "1024",
+          medium: "2048",
+          high: "4096",
+          xhigh: "8192",
+        }
+      : undefined,
     input: ["text"] as const,
     cost,
     contextWindow: ctx,
@@ -25,9 +37,10 @@ function model(
 }
 
 export const MODELS: ProviderModelConfig[] = [
-  // DeepSeek via CommandCode
-  model("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro", 1_000_000, 65536),
-  model("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash", 1_000_000, 65536),
+  // DeepSeek via CommandCode — reasoning supported
+  model("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro", 1_000_000, 65536, true),
+  model("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash", 1_000_000, 65536, true),
+  // Otros modelos (sin reasoning)
   model("deepseek-coder-v3", "DeepSeek Coder V3", 128_000),
   model("deepseek-chat-v3", "DeepSeek Chat V3", 128_000),
   model("deepseek-coder-v2", "DeepSeek Coder V2", 128_000),

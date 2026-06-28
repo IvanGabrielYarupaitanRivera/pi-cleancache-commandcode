@@ -189,6 +189,17 @@ export function streamCommandCode(
           max_tokens: 8192, // frozen — never varies between requests
           temperature: 0.3,
           stream: true,
+          ...(options?.reasoning && model.reasoning
+            ? {
+                thinking: {
+                  type: 'enabled',
+                  budget_tokens: parseInt(
+                    model.thinkingLevelMap?.[options.reasoning] ?? '2048',
+                    10
+                  ),
+                },
+              }
+            : {}),
         },
         threadId: SESSION_THREAD_ID,
       };
