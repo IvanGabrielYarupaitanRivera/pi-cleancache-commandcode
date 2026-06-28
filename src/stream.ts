@@ -15,6 +15,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+
+// ── Sesión: threadId fijo (se genera UNA vez al cargar el módulo) ──
+const SESSION_THREAD_ID = randomUUID();
 import {
   type AssistantMessage,
   type AssistantMessageEventStream,
@@ -187,7 +190,7 @@ export function streamCommandCode(
           temperature: 0.3,
           stream: true,
         },
-        threadId: randomUUID(),
+        threadId: SESSION_THREAD_ID,
       };
 
       // ------------------------------------------------------------------

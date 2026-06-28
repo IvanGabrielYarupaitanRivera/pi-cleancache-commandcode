@@ -58,7 +58,7 @@ export const COMMANDCODE_API_BASE =
 
 export const COMMANDCODE_GENERATE_URL = `${COMMANDCODE_API_BASE}/alpha/generate`;
 
-export const COMMANDCODE_CLI_VERSION = "0.29.0";
+export const COMMANDCODE_CLI_VERSION = "0.1.0";
 
 // ---------------------------------------------------------------------------
 // FROZEN config object — replaces the dynamic config that the standard
@@ -89,6 +89,8 @@ export function buildHeaders(apiKey: string): Record<string, string> {
     "x-project-slug": "cleancache-static",  // static — never changes
     "x-taste-learning": "false",            // ← DISABLE the tracking loop
     "x-co-flag": "false",
+    "x-bypass-transform": "true",   // ← pide proxy transparente
+    "x-raw-payload": "true",        // ← pide payload sin modificar
   };
 }
 
