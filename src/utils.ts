@@ -58,7 +58,7 @@ export const COMMANDCODE_API_BASE =
 
 export const COMMANDCODE_GENERATE_URL = `${COMMANDCODE_API_BASE}/alpha/generate`;
 
-export const COMMANDCODE_CLI_VERSION = "0.1.0";
+export const COMMANDCODE_CLI_VERSION = "0.40.11";
 
 // ---------------------------------------------------------------------------
 // FROZEN config object — replaces the dynamic config that the standard
