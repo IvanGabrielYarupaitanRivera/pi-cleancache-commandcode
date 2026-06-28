@@ -31,7 +31,9 @@ function extractUsage(raw: string): Usage {
   const fallback: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let lastUsage: Usage | undefined;
 
-  for (const line of raw.split("\n").filter(Boolean)) {
+  for (const rawLine of raw.split("\n").filter(Boolean)) {
+    // Strip terminal OSC escape sequences (ESC ] ... BEL) that Pi may inject
+    const line = rawLine.replace(/\u001b\][0-9]+;.*?\u0007/g, "");
     try {
       const evt = JSON.parse(line);
       if (evt.type === "message_end" && evt.message?.role === "assistant") {

@@ -183,7 +183,7 @@ export function streamCommandCode(
           messages: messagesToCC(context.messages),
           tools: context.tools ? freezeTools(context.tools) : [],
           system: STATIC_SYSTEM_PROMPT,
-          max_tokens: options?.maxTokens ?? Math.min(model.maxTokens ?? 8192, 64000),
+          max_tokens: 8192, // frozen — never varies between requests
           temperature: 0.3,
           stream: true,
         },
