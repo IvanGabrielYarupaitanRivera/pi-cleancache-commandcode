@@ -43,7 +43,6 @@ import {
   sanitise,
   promptTo256Padding,
   countTokens,
-  alignMessageForCache,
   deterministicStringify,
 } from "./utils.js";
 
@@ -174,28 +173,47 @@ function cleanHistoryForCache(messages: readonly Message[]): Message[] {
 }
 
 // ---------------------------------------------------------------------------
-// Aplica padding de 256 tokens SOLO al ÚLTIMO mensaje.
-// Si aplicamos padding a TODO el historial, los mensajes antiguos dejan de
-// ser idénticos entre requests → se destruye el Radix Cache.
+// Aplica padding de 256 tokens SOLO al ÚLTIMO mensaje, calculando el residuo
+// GLOBAL del payload completo (system prompt + historial inmutable + último
+// mensaje). Si calculáramos el residuo solo del último mensaje, el historial
+// acumulado (que puede no ser múltiplo de 256) desalinearía todo el payload.
 // ---------------------------------------------------------------------------
-function applyMessagePadding(messages: unknown[]): void {
+function applyMessagePadding(messages: unknown[], paddedSystem: string): void {
   if (messages.length === 0) return;
-  const msg = messages[messages.length - 1] as any;
-  if (typeof msg.content === "string") {
-    msg.content = alignMessageForCache(msg.content);
-  } else if (Array.isArray(msg.content)) {
-    // Encontrar el último bloque de texto y aplicarle padding
+
+  // 1. Contar tokens del system prompt (ya viene con padding a 256)
+  let tokensTotales = countTokens(paddedSystem);
+
+  // 2. Sumar todos los mensajes serializados EXCEPTO el último
+  for (let i = 0; i < messages.length - 1; i++) {
+    tokensTotales += countTokens(deterministicStringify(messages[i]));
+  }
+
+  // 3. Sumar el último mensaje (sin padding aún)
+  const ultimoMensaje = messages[messages.length - 1] as any;
+  tokensTotales += countTokens(deterministicStringify(ultimoMensaje));
+
+  // 4. Calcular residuo global frente al bloque de 256
+  const residuoGlobal = tokensTotales % 256;
+  if (residuoGlobal === 0) return; // Ya está perfectamente alineado
+
+  const tokensFaltantes = 256 - residuoGlobal;
+
+  // 5. Inyectar padding EXCLUSIVAMENTE al final del último mensaje
+  const paddingString = `\n/* CC-PAD: ${"0".repeat(Math.max(0, tokensFaltantes * 3 - 14))} */`;
+  if (typeof ultimoMensaje.content === "string") {
+    ultimoMensaje.content = ultimoMensaje.content + paddingString;
+  } else if (Array.isArray(ultimoMensaje.content)) {
     let lastTextIdx = -1;
-    for (let i = msg.content.length - 1; i >= 0; i--) {
-      if (msg.content[i].type === "text") {
+    for (let i = ultimoMensaje.content.length - 1; i >= 0; i--) {
+      if (ultimoMensaje.content[i].type === "text") {
         lastTextIdx = i;
         break;
       }
     }
     if (lastTextIdx >= 0) {
-      msg.content[lastTextIdx].text = alignMessageForCache(
-        msg.content[lastTextIdx].text || "",
-      );
+      ultimoMensaje.content[lastTextIdx].text =
+        (ultimoMensaje.content[lastTextIdx].text || "") + paddingString;
     }
   }
 }
@@ -254,11 +272,11 @@ export function streamCommandCode(
       // 2. Convertir a formato CommandCode
       const ccMessages = messagesToCC(cleanedMessages);
 
-      // 3. Padding 256 tokens por mensaje individual
-      applyMessagePadding(ccMessages);
-
-      // System prompt: estático + padding a 256 tokens
+      // 3. System prompt: estático + padding a 256 tokens
       const paddedSystem = promptTo256Padding(STATIC_SYSTEM_PROMPT);
+
+      // 4. Padding 256 tokens — residuo GLOBAL (solo último mensaje)
+      applyMessagePadding(ccMessages, paddedSystem);
 
       const params: Record<string, any> = {
         model: model.id,
