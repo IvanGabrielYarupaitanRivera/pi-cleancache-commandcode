@@ -48,6 +48,7 @@ export async function login(
 
   if (!apiKey) throw new Error("No API key provided");
 
+  // Conexión exitosa 🧊
   return {
     refresh: apiKey,
     access: apiKey,

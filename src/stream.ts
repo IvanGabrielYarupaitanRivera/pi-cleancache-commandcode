@@ -174,27 +174,28 @@ function cleanHistoryForCache(messages: readonly Message[]): Message[] {
 }
 
 // ---------------------------------------------------------------------------
-// Aplica padding de 256 tokens al contenido de texto de cada mensaje.
+// Aplica padding de 256 tokens SOLO al ÚLTIMO mensaje.
+// Si aplicamos padding a TODO el historial, los mensajes antiguos dejan de
+// ser idénticos entre requests → se destruye el Radix Cache.
 // ---------------------------------------------------------------------------
 function applyMessagePadding(messages: unknown[]): void {
-  for (const msg of messages) {
-    const m = msg as any;
-    if (typeof m.content === "string") {
-      m.content = alignMessageForCache(m.content);
-    } else if (Array.isArray(m.content)) {
-      // Encontrar el último bloque de texto y aplicarle padding
-      let lastTextIdx = -1;
-      for (let i = m.content.length - 1; i >= 0; i--) {
-        if (m.content[i].type === "text") {
-          lastTextIdx = i;
-          break;
-        }
+  if (messages.length === 0) return;
+  const msg = messages[messages.length - 1] as any;
+  if (typeof msg.content === "string") {
+    msg.content = alignMessageForCache(msg.content);
+  } else if (Array.isArray(msg.content)) {
+    // Encontrar el último bloque de texto y aplicarle padding
+    let lastTextIdx = -1;
+    for (let i = msg.content.length - 1; i >= 0; i--) {
+      if (msg.content[i].type === "text") {
+        lastTextIdx = i;
+        break;
       }
-      if (lastTextIdx >= 0) {
-        m.content[lastTextIdx].text = alignMessageForCache(
-          m.content[lastTextIdx].text || "",
-        );
-      }
+    }
+    if (lastTextIdx >= 0) {
+      msg.content[lastTextIdx].text = alignMessageForCache(
+        msg.content[lastTextIdx].text || "",
+      );
     }
   }
 }
