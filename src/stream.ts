@@ -42,6 +42,7 @@ import {
   getModelCost,
   sanitise,
   promptTo256Padding,
+  countTokens,
   alignMessageForCache,
   deterministicStringify,
 } from "./utils.js";
@@ -292,12 +293,22 @@ export function streamCommandCode(
       };
 
       // ------------------------------------------------------------------
+      // Serialize & telemetry
+      // ------------------------------------------------------------------
+      const bodyStr = deterministicStringify(body);
+      const totalTokens = countTokens(bodyStr);
+      console.log(
+        `\x1b[36m[CleanCache]\x1b[0m Payload: ${totalTokens} tokens | ` +
+        `Alineado a 256: ${totalTokens % 256 === 0 ? '✅ SÍ' : '❌ NO (residuo ' + totalTokens % 256 + ')'}`
+      );
+
+      // ------------------------------------------------------------------
       // Make the HTTP request
       // ------------------------------------------------------------------
       const response = await fetch(COMMANDCODE_GENERATE_URL, {
         method: "POST",
         headers: buildHeaders(apiKey),
-        body: deterministicStringify(body),
+        body: bodyStr,
         signal: options?.signal,
       });
 

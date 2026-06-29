@@ -121,18 +121,28 @@ export function sanitise(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// TOKENIZADOR UNICODE — Precisión quirúrgica para código internacional.
+// \p{L} = letras, \p{M} = marcas combinantes (acentos/tildes), \p{N} = números.
+// El flag 'u' habilita propiedades Unicode. Soporta emojis, kanji, eñes, etc.
+// ---------------------------------------------------------------------------
+export function countTokens(text: string): number {
+  if (!text) return 0;
+  const matches = text.match(/[\p{L}\p{M}]+|\p{N}+|[^\p{L}\p{M}\p{N}\s]|\s+/gu);
+  return matches ? matches.length : 0;
+}
+
+// ---------------------------------------------------------------------------
 // PADDING 256 — DeepSeek V4 cachea en bloques de 256 tokens.
 // Si CommandCode añade metadatos, se desalinea. Esta función fuerza
 // que el system prompt termine alineado a 256 tokens.
-// Aproximación: ~4 caracteres por token.
 // ---------------------------------------------------------------------------
 export function promptTo256Padding(prompt: string): string {
-  const estimatedTokens = Math.ceil(prompt.length / 4);
-  const remainder = estimatedTokens % 256;
+  const tokens = countTokens(prompt);
+  const remainder = tokens % 256;
   if (remainder === 0) return prompt;
   const missingTokens = 256 - remainder;
-  // Padding con espacios (DeepSeek los ignora visualmente)
-  return prompt + " ".repeat(missingTokens * 4);
+  // Comentario invisible de padding — DeepSeek lo procesa como tokens de relleno
+  return prompt + `\n/* CC-PAD: ${"0".repeat(Math.max(0, missingTokens * 3 - 14))} */`;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,11 +150,11 @@ export function promptTo256Padding(prompt: string): string {
 // individual para alineamiento de bloques en DeepSeek V4.
 // ---------------------------------------------------------------------------
 export function alignMessageForCache(content: string): string {
-  const estimatedTokens = Math.ceil(content.length / 4);
-  const remainder = estimatedTokens % 256;
+  const tokens = countTokens(content);
+  const remainder = tokens % 256;
   if (remainder === 0) return content;
   const missingTokens = 256 - remainder;
-  return content + " ".repeat(missingTokens * 4);
+  return content + `\n/* CC-PAD: ${"0".repeat(Math.max(0, missingTokens * 3 - 14))} */`;
 }
 
 // ---------------------------------------------------------------------------
