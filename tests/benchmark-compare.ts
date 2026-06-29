@@ -25,7 +25,7 @@ import { resolve } from "node:path";
 const PROJECT_DIR = resolve(process.cwd());
 const EXTENSION = resolve(PROJECT_DIR, "src/index.ts");
 const WARMUP_RUNS = 1;
-const MEASURED_RUNS = 4;
+const MEASURED_RUNS = 10;
 const TOTAL_RUNS = WARMUP_RUNS + MEASURED_RUNS;
 
 const TEST_PROMPT =
@@ -44,12 +44,12 @@ interface ProviderConfig {
 const PROVIDERS: ProviderConfig[] = [
   {
     name: "CleanCache (CommandCode)",
-    model: "cleancache/deepseek/deepseek-v4-pro",
+    model: "cleancache/deepseek/deepseek-v4-flash",
     useExtension: true,
   },
   {
     name: "DeepSeek API Directa",
-    model: "deepseek/deepseek-v4-pro",
+    model: "deepseek/deepseek-v4-flash",
     useExtension: false,
   },
 ];
@@ -175,7 +175,9 @@ async function main() {
     console.log("-".repeat(72));
     console.log(`📡 Provider: ${config.name}`);
     console.log(`   Model:    ${config.model}`);
-    console.log(`   Extension: ${config.useExtension ? "yes (CleanCache)" : "no (direct)"}`);
+    console.log(
+      `   Extension: ${config.useExtension ? "yes (CleanCache)" : "no (direct)"}`,
+    );
     console.log("");
 
     const runs: RunResult[] = [];
@@ -240,17 +242,10 @@ async function main() {
       const cc = ccResults.runs[i];
       const ds = dsResults.runs[i];
 
-      const ccStr = cc
-        ? formatUsage(cc.usage)
-        : "—";
-      const dsStr = ds
-        ? formatUsage(ds.usage)
-        : "—";
+      const ccStr = cc ? formatUsage(cc.usage) : "—";
+      const dsStr = ds ? formatUsage(ds.usage) : "—";
 
-      const label =
-        i < WARMUP_RUNS
-          ? "WARM"
-          : `  #${i - WARMUP_RUNS + 1}`;
+      const label = i < WARMUP_RUNS ? "WARM" : `  #${i - WARMUP_RUNS + 1}`;
 
       console.log(
         `${label}  ${sep} ${ccStr.padEnd(colWidth - 1)}${sep} ${dsStr.padEnd(colWidth - 1)}`,
@@ -270,7 +265,8 @@ async function main() {
 
     if (ccFirst && dsFirst) {
       const overhead = ccFirst.input - dsFirst.input;
-      const overheadPct = dsFirst.input > 0 ? (overhead / dsFirst.input) * 100 : 0;
+      const overheadPct =
+        dsFirst.input > 0 ? (overhead / dsFirst.input) * 100 : 0;
 
       console.log("");
       console.log(`  First-turn input tokens:`);
@@ -323,9 +319,13 @@ async function main() {
     );
 
     if (ratio >= 80) {
-      console.log("  🟢 Excellent — the proxy overhead is the only limiting factor.");
+      console.log(
+        "  🟢 Excellent — the proxy overhead is the only limiting factor.",
+      );
     } else if (ratio >= 50) {
-      console.log("  🟡 Good — directionally correct, with some cache miss leakage.");
+      console.log(
+        "  🟡 Good — directionally correct, with some cache miss leakage.",
+      );
     } else {
       console.log("  🔴 The proxy may be mutating payloads server-side.");
     }
@@ -333,7 +333,9 @@ async function main() {
     console.log("");
     console.log("  Recommendation:");
     console.log("    - For max cache efficiency: use DeepSeek API directly.");
-    console.log("    - For convenience + $1 plan: CleanCache is the best you can get.");
+    console.log(
+      "    - For convenience + $1 plan: CleanCache is the best you can get.",
+    );
   } else {
     console.log("  ❌ Insufficient data for a verdict.");
   }

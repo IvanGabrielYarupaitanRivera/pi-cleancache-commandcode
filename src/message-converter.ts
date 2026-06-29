@@ -9,8 +9,16 @@
  *   - role "assistant" with array of blocks (text, reasoning, tool-call)
  *   - role "tool" with an array containing a single tool-result block
  *
- * Only "user" messages receive cache-alignment padding (alignMessageForCache).
- * "assistant" and "tool" messages are passed through with only sanitisation.
+ * ═══ 256-TOKEN BOUNDARY PADDING ═══
+ * DeepSeek V4's MLA architecture caches prefix blocks in strict 256-token
+ * boundaries. If a message's token count is not a multiple of 256, the Radix
+ * tree alignment shifts across turns, causing a cache miss.
+ *
+ * ALL messages (user, assistant, tool) receive alignMessageForCache() on
+ * their text/reasoning content. This appends a deterministic comment block
+ * that pads the message to the next 256-token boundary. Because the padding
+ * is a deterministic function of the content alone, every reconstruction of
+ * the same conversational state produces byte-identical messages.
  */
 
 import { type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
@@ -62,11 +70,14 @@ function convertAssistantMessage(msg: Message): unknown[] {
 
   for (const block of content) {
     if (block.type === "text" && block.text) {
-      parts.push({ type: "text", text: sanitise(block.text) });
+      // Pad each text block individually so its token count locks into a 256-boundary.
+      // This ensures the byte-signature is identical every time this message is
+      // reconstructed in future turns (deterministic padding based on content).
+      parts.push({ type: "text", text: alignMessageForCache(sanitise(block.text)) });
     } else if (block.type === "thinking" && (block as any).thinking) {
       parts.push({
         type: "reasoning",
-        text: sanitise((block as any).thinking),
+        text: alignMessageForCache(sanitise((block as any).thinking)),
       });
     } else if (block.type === "toolCall") {
       parts.push({
@@ -90,8 +101,8 @@ function convertToolResultMessage(tr: ToolResultMessage): unknown {
         toolCallId: tr.toolCallId,
         toolName: tr.toolName,
         output: tr.isError
-          ? { type: "error-text", value: extractText(tr) }
-          : { type: "text", value: extractText(tr) },
+          ? { type: "error-text", value: alignMessageForCache(extractText(tr)) }
+          : { type: "text", value: alignMessageForCache(extractText(tr)) },
       },
     ],
   };
