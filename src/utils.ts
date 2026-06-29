@@ -58,13 +58,6 @@ export const COMMANDCODE_API_BASE =
 
 export const COMMANDCODE_GENERATE_URL = `${COMMANDCODE_API_BASE}/alpha/generate`;
 
-// ── Provider API v1 (OpenAI-compatible, mejor caché) ──
-export const COMMANDCODE_PROVIDER_BASE =
-  process.env["COMMANDCODE_PROVIDER_BASE_URL"] ??
-  "https://api.commandcode.ai/provider/v1";
-
-export const COMMANDCODE_CHAT_URL = `${COMMANDCODE_PROVIDER_BASE}/chat/completions`;
-
 export const COMMANDCODE_CLI_VERSION = "0.40.11";
 
 // ---------------------------------------------------------------------------
