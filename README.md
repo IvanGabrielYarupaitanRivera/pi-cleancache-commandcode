@@ -1,14 +1,14 @@
 # pi-cleancache-commandcode 🧊
 
-**CleanCache bridge for CommandCode API** — un proveedor custom de [Pi](https://pi.dev) que fuerza un **contexto estrictamente estático** para maximizar el **Prefix Caching** de DeepSeek cuando usas el proxy de CommandCode.
+**CleanCache bridge for CommandCode API** — un proveedor custom de [Pi](https://pi.dev) que optimiza el **Prefix Caching** de DeepSeek cuando usas el proxy de CommandCode.
 
 ## El Problema
 
 | Métrica | DeepSeek API directa | CommandCode proxy (crudo) | CommandCode + CleanCache |
 |---------|---------------------|--------------------------|--------------------------|
-| Cache Hit Rate | 87–99 % | ~30 % | **87–99 %** ✅ |
-| Input tokens (query simple) | ~174 | ~16 000 | **~174** ✅ |
-| Coste por iteración | ~$0.001 | ~$0.08 | **~$0.001** ✅ |
+| Cache Hit Rate | 87–99 % | ~30 % | **~50 % (pico ~84 % en sesiones largas)** ✅ |
+| Input tokens (query simple) | ~174 | ~16 000 | **~3 000–5 000** ✅ |
+| Coste por iteración | ~$0.001 | ~$0.08 | **~$0.02–0.07** ✅ |
 
 CommandCode destruye el prefix caching por tres razones:
 
@@ -24,7 +24,19 @@ El extension registra un provider custom (`cleancache`) con una capa de streamin
 2. ❄️ **Congela las tool definitions** — ordenadas alfabéticamente, sin campos efímeros.
 3. 🧹 **Limpia metadatos dinámicos** — ni session IDs, ni timestamps, ni architecture logs.
 
-Cada request comparte un **prefijo byte‑idéntico**. DeepSeek lo cachea al >87 %.
+Cada request comparte un **prefijo byte‑idéntico** para la parte inmutable del payload. El historial de conversación, por su naturaleza acumulativa, inevitablemente cambia entre turnos, lo que limita el cache hit rate a ~50% en sesiones típicas.
+
+## Resultados reales
+
+> ⚠️ El prefix caching tiene un límite fundamental: solo cachea desde el byte 0 hasta el primer byte diferente. En una conversación de múltiples turnos, el historial crece y cambia, así que **el 87-99% de la API directa no es alcanzable a través de un proxy**.
+
+| Métrica | Resultado típico | Mejor caso (sesión larga) |
+|---------|-----------------|--------------------------|
+| Cache Hit Rate | ~48–50% | ~84% |
+| Tokens salvados por turno | — | 125k de 148k |
+| Coste por turno (148k tokens) | ~$0.074 | — |
+
+La mejora sobre el proxy crudo (~30% → ~50%) es real pero modesta. Para máximo rendimiento de caché, usa DeepSeek API directamente.
 
 ## Instalación
 
@@ -119,6 +131,7 @@ pi-cleancache-commandcode/
     ├── index.ts          # Entry point del extension
     ├── provider.ts       # Registro del provider y catálogo de modelos
     ├── stream.ts         # Stream wrapper cache‑optimizado
+    ├── auth.ts           # OAuth / login flow para CommandCode
     └── utils.ts          # Static prompt, frozen tools, helpers
 ```
 
@@ -140,12 +153,19 @@ pi-cleancache-commandcode/
 `streamCommandCode()` en `stream.ts`:
 1. Toma el `Context` de Pi y reemplaza `systemPrompt` por la versión estática
 2. Congela el array `tools`
-3. Delega en `openAICompletionsApi().streamSimple()` para el HTTP/SSE real
-4. Reenvía todos los eventos a Pi
+3. Construye el payload con headers estáticos y config congelada
+4. Envía el request HTTP a `/alpha/generate` y parsea el stream SSE
+5. Reenvía todos los eventos a Pi
 
 ### 4. Provider Payload Guard
 
 `before_provider_request` en `index.ts` normaliza el payload **justo antes** de enviarlo, atrapando cualquier caso borde donde el serializador built-in se hubiese usado en vez de nuestro stream custom.
+
+### 5. Limitaciones conocidas
+
+- **Prefix caching limitado por el historial**: el historial de conversación cambia inevitablemente entre turnos. La parte cacheable es solo el prefijo común (system prompt + tools + headers + config), no los mensajes acumulados.
+- **El proxy de CommandCode no es transparente**: `/alpha/generate` puede añadir metadatos variables fuera de nuestro control.
+- **El padding de 256 tokens se desactivó por defecto**: el tokenizador casero no coincide exactamente con el de DeepSeek y el padding se filtraba a las respuestas visibles.
 
 ## Comandos
 

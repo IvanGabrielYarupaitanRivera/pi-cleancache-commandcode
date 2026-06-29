@@ -81,7 +81,7 @@ function messagesToCC(messages: readonly Message[]): unknown[] {
       const content = Array.isArray(msg.content) ? msg.content : [];
       for (const block of content) {
         if (block.type === "text" && block.text) {
-          parts.push({ type: "text", text: alignMessageForCache(sanitise(block.text)) });
+          parts.push({ type: "text", text: sanitise(block.text) });
         } else if (block.type === "thinking" && (block as any).thinking) {
           parts.push({ type: "reasoning", text: sanitise((block as any).thinking) });
         } else if (block.type === "toolCall") {
@@ -104,8 +104,8 @@ function messagesToCC(messages: readonly Message[]): unknown[] {
             toolCallId: tr.toolCallId,
             toolName: tr.toolName,
             output: tr.isError
-              ? { type: "error-text", value: alignMessageForCache(extractText(tr)) }
-              : { type: "text", value: alignMessageForCache(extractText(tr)) },
+              ? { type: "error-text", value: extractText(tr) }
+              : { type: "text", value: extractText(tr) },
           },
         ],
       });
