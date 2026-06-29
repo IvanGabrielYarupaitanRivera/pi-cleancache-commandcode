@@ -9,9 +9,10 @@
  *  3.  FREEZES the tool definitions (sorted, stripped).
  *  4.  Disables the Taste‑1 tracking loop (x-taste-learning: false).
  *  5.  Uses a static project slug.
- *  6.  PROMPT ACUMULATIVO: historial consolidado DENTRO del system prompt.
- *  7.  PADDING 256: alineación a bloques de 256 tokens (DeepSeek V4).
- *  8.  FLAGS OCULTOS: cache_prompt + disable_backend_formatting.
+ *  6.  THINKING TRUNCATION: poda thinking blocks de turnos pasados (~80% ahorro).
+ *  7.  PADDING 256: system prompt + padding por mensaje individual.
+ *  8.  DETERMINISTIC JSON: keys ordenadas alfabéticamente.
+ *  9.  FLAGS OCULTOS: cache_prompt + disable_backend_formatting.
  *
  * Result: every request shares a byte‑identical prefix → DeepSeek
  * prefix caching hits at 87‑99% instead of ~30%.
@@ -41,7 +42,8 @@ import {
   getModelCost,
   sanitise,
   promptTo256Padding,
-  historyToText,
+  alignMessageForCache,
+  deterministicStringify,
 } from "./utils.js";
 
 // ---------------------------------------------------------------------------
@@ -139,37 +141,61 @@ function parseEventLine(line: string): CCEvent | undefined {
 
 
 // ---------------------------------------------------------------------------
-// PROMPT ACUMULATIVO:
-// Separa el historial del último mensaje de usuario para incrustarlo
-// en el system prompt y evitar la re-serialización de CommandCode.
+// THINKING TRUNCATION — Poda los bloques de pensamiento de mensajes
+// assistant pasados. El último mensaje assistant conserva su thinking.
+// Los thinking blocks antiguos crean "ramas muertas" en el Radix Cache
+// y representan ~80% del tamaño del historial.
 // ---------------------------------------------------------------------------
-function splitHistory(messages: readonly Message[]): {
-  lastUserMsg: any;
-  historyText: string;
-} {
-  let lastUserIdx = -1;
+function cleanHistoryForCache(messages: readonly Message[]): Message[] {
+  // Encontrar el índice del ÚLTIMO mensaje assistant
+  let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      lastUserIdx = i;
+    if (messages[i].role === "assistant") {
+      lastAssistantIdx = i;
       break;
     }
   }
-  const historyMsgs = lastUserIdx > 0 ? messages.slice(0, lastUserIdx) : [];
-  const historyText = historyToText(historyMsgs);
-  if (lastUserIdx >= 0) {
-    const lastMsg = messages[lastUserIdx];
-    const txt =
-      typeof lastMsg.content === "string"
-        ? lastMsg.content
-        : Array.isArray(lastMsg.content)
-          ? lastMsg.content
-              .filter((c: any) => c.type === "text")
-              .map((c: any) => c.text || "")
-              .join("\n")
-          : "";
-    return { lastUserMsg: { role: "user", content: txt }, historyText };
+
+  return messages.map((msg, idx) => {
+    // Solo procesar mensajes assistant que NO sean el último
+    if (msg.role !== "assistant" || idx === lastAssistantIdx) return msg;
+    if (!Array.isArray(msg.content)) return msg;
+
+    const filteredContent = msg.content.filter(
+      (block: any) => block.type !== "thinking",
+    );
+
+    // Si no cambió nada, devolver el mensaje original
+    if (filteredContent.length === msg.content.length) return msg;
+
+    return { ...msg, content: filteredContent } as Message;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Aplica padding de 256 tokens al contenido de texto de cada mensaje.
+// ---------------------------------------------------------------------------
+function applyMessagePadding(messages: unknown[]): void {
+  for (const msg of messages) {
+    const m = msg as any;
+    if (typeof m.content === "string") {
+      m.content = alignMessageForCache(m.content);
+    } else if (Array.isArray(m.content)) {
+      // Encontrar el último bloque de texto y aplicarle padding
+      let lastTextIdx = -1;
+      for (let i = m.content.length - 1; i >= 0; i--) {
+        if (m.content[i].type === "text") {
+          lastTextIdx = i;
+          break;
+        }
+      }
+      if (lastTextIdx >= 0) {
+        m.content[lastTextIdx].text = alignMessageForCache(
+          m.content[lastTextIdx].text || "",
+        );
+      }
+    }
   }
-  return { lastUserMsg: null, historyText };
 }
 
 // ---------------------------------------------------------------------------
@@ -213,30 +239,28 @@ export function streamCommandCode(
       }
 
       // ------------------------------------------------------------------
-      // PROMPT ACUMULATIVO:
-      // 1. Separa el historial del último mensaje de usuario
-      // 2. Convierte el historial a texto plano
-      // 3. Lo inyecta DENTRO del system prompt (para evitar re-serialización)
-      // 4. Aplica padding a bloques de 256 tokens (DeepSeek V4)
-      // 5. Envía solo el último mensaje en params.messages
-      // 6. Añade flags ocultos para forzar caché
+      // BUILD REQUEST — Optimizado para prefix caching:
+      // 1. Podar thinking blocks de mensajes assistant pasados
+      // 2. Enviar TODO el historial en params.messages
+      // 3. Padding de 256 tokens POR MENSAJE
+      // 4. JSON determinista con keys ordenadas
+      // 5. Flags ocultos para forzar caché
       // ------------------------------------------------------------------
-      // Build base system prompt with history embedded
-      const { lastUserMsg, historyText } = splitHistory(context.messages);
+      // 1. Podar thinking tokens antiguos
+      const cleanedMessages = cleanHistoryForCache(context.messages);
 
-      // System prompt = STATIC + history + padding
-      const accumulatedSystem = historyText
-        ? STATIC_SYSTEM_PROMPT + "\n\n====== HISTORIAL ======\n" + historyText
-        : STATIC_SYSTEM_PROMPT;
+      // 2. Convertir a formato CommandCode
+      const ccMessages = messagesToCC(cleanedMessages);
 
-      const paddedSystem = promptTo256Padding(accumulatedSystem);
+      // 3. Padding 256 tokens por mensaje individual
+      applyMessagePadding(ccMessages);
 
-      // Messages array: SOLO el último mensaje del usuario
-      const finalMessages = lastUserMsg ? [lastUserMsg] : [];
+      // System prompt: estático + padding a 256 tokens
+      const paddedSystem = promptTo256Padding(STATIC_SYSTEM_PROMPT);
 
       const params: Record<string, any> = {
         model: model.id,
-        messages: finalMessages,
+        messages: ccMessages,
         tools: context.tools ? freezeTools(context.tools) : [],
         system: paddedSystem,
         max_tokens: 8192,
@@ -273,7 +297,7 @@ export function streamCommandCode(
       const response = await fetch(COMMANDCODE_GENERATE_URL, {
         method: "POST",
         headers: buildHeaders(apiKey),
-        body: JSON.stringify(body),
+        body: deterministicStringify(body),
         signal: options?.signal,
       });
 

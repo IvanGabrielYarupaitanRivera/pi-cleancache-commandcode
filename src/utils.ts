@@ -136,56 +136,31 @@ export function promptTo256Padding(prompt: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// PROMPT ACUMULATIVO — Convierte un array de mensajes a texto plano
-// para incrustarlo en el system prompt.
+// PADDING POR MENSAJE — Aplica padding de 256 tokens a cada mensaje
+// individual para alineamiento de bloques en DeepSeek V4.
 // ---------------------------------------------------------------------------
-import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
+export function alignMessageForCache(content: string): string {
+  const estimatedTokens = Math.ceil(content.length / 4);
+  const remainder = estimatedTokens % 256;
+  if (remainder === 0) return content;
+  const missingTokens = 256 - remainder;
+  return content + " ".repeat(missingTokens * 4);
+}
 
-export function historyToText(messages: readonly Message[]): string {
-  const parts: string[] = [];
-  for (const msg of messages) {
-    if (msg.role === "user") {
-      const text = typeof msg.content === "string"
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content
-              .filter((c) => c.type === "text")
-              .map((c) => (c as any).text)
-              .join("\n")
-          : "";
-      parts.push(`[Usuario]: ${text}`);
-    } else if (msg.role === "assistant") {
-      const textBlocks: string[] = [];
-      const toolCalls: string[] = [];
-      for (const block of Array.isArray(msg.content) ? msg.content : []) {
-        if (block.type === "text" && (block as any).text) {
-          textBlocks.push((block as any).text);
-        } else if (block.type === "toolCall") {
-          toolCalls.push(`[${block.name}]`);
-        } else if (block.type === "thinking" && (block as any).thinking) {
-          textBlocks.push(`[Razonamiento]: ${(block as any).thinking}`);
-        }
-      }
-      if (textBlocks.length > 0) {
-        parts.push(`[Asistente]: ${textBlocks.join("\n")}`);
-      }
-      if (toolCalls.length > 0) {
-        parts.push(`[Herramientas]: ${toolCalls.join(", ")}`);
-      }
-    } else if (msg.role === "toolResult") {
-      const tr = msg as ToolResultMessage;
-      const text = typeof tr.content === "string"
-        ? tr.content
-        : Array.isArray(tr.content)
-          ? tr.content
-              .filter((c) => c.type === "text")
-              .map((c) => (c as any).text)
-              .join("\n")
-          : "";
-      // Truncar resultados largos y sanitizar rutas
-      const truncated = text.length > 500 ? text.slice(0, 500) + "..." : text;
-      parts.push(`[Resultado de ${tr.toolName}]: ${truncated}`);
-    }
+// ---------------------------------------------------------------------------
+// JSON DETERMINISTA — Serializa con keys ordenadas alfabéticamente para
+// que CommandCode no cambie el orden al re-serializar.
+// ---------------------------------------------------------------------------
+export function deterministicStringify(obj: unknown, space?: number): string {
+  return JSON.stringify(sortKeys(obj), null, space);
+}
+
+function sortKeys(obj: unknown): unknown {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(sortKeys);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(obj as Record<string, unknown>).sort()) {
+    sorted[key] = sortKeys((obj as Record<string, unknown>)[key]);
   }
-  return parts.join("\n\n");
+  return sorted;
 }
