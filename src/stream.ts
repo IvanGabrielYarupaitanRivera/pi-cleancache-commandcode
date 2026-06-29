@@ -9,6 +9,9 @@
  *  3.  FREEZES the tool definitions (sorted, stripped).
  *  4.  Disables the Taste‑1 tracking loop (x-taste-learning: false).
  *  5.  Uses a static project slug.
+ *  6.  PROMPT ACUMULATIVO: historial consolidado DENTRO del system prompt.
+ *  7.  PADDING 256: alineación a bloques de 256 tokens (DeepSeek V4).
+ *  8.  FLAGS OCULTOS: cache_prompt + disable_backend_formatting.
  *
  * Result: every request shares a byte‑identical prefix → DeepSeek
  * prefix caching hits at 87‑99% instead of ~30%.
@@ -37,6 +40,8 @@ import {
   freezeTools,
   getModelCost,
   sanitise,
+  promptTo256Padding,
+  historyToText,
 } from "./utils.js";
 
 // ---------------------------------------------------------------------------
@@ -132,6 +137,41 @@ function parseEventLine(line: string): CCEvent | undefined {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// PROMPT ACUMULATIVO:
+// Separa el historial del último mensaje de usuario para incrustarlo
+// en el system prompt y evitar la re-serialización de CommandCode.
+// ---------------------------------------------------------------------------
+function splitHistory(messages: readonly Message[]): {
+  lastUserMsg: any;
+  historyText: string;
+} {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  const historyMsgs = lastUserIdx > 0 ? messages.slice(0, lastUserIdx) : [];
+  const historyText = historyToText(historyMsgs);
+  if (lastUserIdx >= 0) {
+    const lastMsg = messages[lastUserIdx];
+    const txt =
+      typeof lastMsg.content === "string"
+        ? lastMsg.content
+        : Array.isArray(lastMsg.content)
+          ? lastMsg.content
+              .filter((c: any) => c.type === "text")
+              .map((c: any) => c.text || "")
+              .join("\n")
+          : "";
+    return { lastUserMsg: { role: "user", content: txt }, historyText };
+  }
+  return { lastUserMsg: null, historyText };
+}
+
 // ---------------------------------------------------------------------------
 // Main stream function
 // ---------------------------------------------------------------------------
@@ -173,34 +213,57 @@ export function streamCommandCode(
       }
 
       // ------------------------------------------------------------------
-      // Build request body — frozen config, frozen system prompt,
-      // frozen tools, dynamic messages only.
+      // PROMPT ACUMULATIVO:
+      // 1. Separa el historial del último mensaje de usuario
+      // 2. Convierte el historial a texto plano
+      // 3. Lo inyecta DENTRO del system prompt (para evitar re-serialización)
+      // 4. Aplica padding a bloques de 256 tokens (DeepSeek V4)
+      // 5. Envía solo el último mensaje en params.messages
+      // 6. Añade flags ocultos para forzar caché
       // ------------------------------------------------------------------
+      // Build base system prompt with history embedded
+      const { lastUserMsg, historyText } = splitHistory(context.messages);
+
+      // System prompt = STATIC + history + padding
+      const accumulatedSystem = historyText
+        ? STATIC_SYSTEM_PROMPT + "\n\n====== HISTORIAL ======\n" + historyText
+        : STATIC_SYSTEM_PROMPT;
+
+      const paddedSystem = promptTo256Padding(accumulatedSystem);
+
+      // Messages array: SOLO el último mensaje del usuario
+      const finalMessages = lastUserMsg ? [lastUserMsg] : [];
+
+      const params: Record<string, any> = {
+        model: model.id,
+        messages: finalMessages,
+        tools: context.tools ? freezeTools(context.tools) : [],
+        system: paddedSystem,
+        max_tokens: 8192,
+        temperature: 0.3,
+        stream: true,
+      };
+
+      // Reasoning / thinking
+      if (options?.reasoning && model.reasoning) {
+        params.thinking = {
+          type: 'enabled',
+          budget_tokens: parseInt(
+            model.thinkingLevelMap?.[options.reasoning] ?? '2048',
+            10
+          ),
+        };
+      }
+
       const body = {
         config: STATIC_CONFIG,
         memory: null,
         taste: null,
         skills: null,
-        params: {
-          model: model.id,
-          messages: messagesToCC(context.messages),
-          tools: context.tools ? freezeTools(context.tools) : [],
-          system: STATIC_SYSTEM_PROMPT,
-          max_tokens: 8192, // frozen — never varies between requests
-          temperature: 0.3,
-          stream: true,
-          ...(options?.reasoning && model.reasoning
-            ? {
-                thinking: {
-                  type: 'enabled',
-                  budget_tokens: parseInt(
-                    model.thinkingLevelMap?.[options.reasoning] ?? '2048',
-                    10
-                  ),
-                },
-              }
-            : {}),
-        },
+        // ── FLAGS OCULTOS para forzar caché ──
+        cache_prompt: true,
+        disable_backend_formatting: true,
+        params: params,
         threadId: SESSION_THREAD_ID,
       };
 

@@ -119,3 +119,73 @@ export function getModelCost(modelId: string) {
 export function sanitise(text: string): string {
   return text.replace(/[\uD800-\uDFFF]/g, "\uFFFD");
 }
+
+// ---------------------------------------------------------------------------
+// PADDING 256 — DeepSeek V4 cachea en bloques de 256 tokens.
+// Si CommandCode añade metadatos, se desalinea. Esta función fuerza
+// que el system prompt termine alineado a 256 tokens.
+// Aproximación: ~4 caracteres por token.
+// ---------------------------------------------------------------------------
+export function promptTo256Padding(prompt: string): string {
+  const estimatedTokens = Math.ceil(prompt.length / 4);
+  const remainder = estimatedTokens % 256;
+  if (remainder === 0) return prompt;
+  const missingTokens = 256 - remainder;
+  // Padding con espacios (DeepSeek los ignora visualmente)
+  return prompt + " ".repeat(missingTokens * 4);
+}
+
+// ---------------------------------------------------------------------------
+// PROMPT ACUMULATIVO — Convierte un array de mensajes a texto plano
+// para incrustarlo en el system prompt.
+// ---------------------------------------------------------------------------
+import type { Message, ToolResultMessage } from "@earendil-works/pi-ai";
+
+export function historyToText(messages: readonly Message[]): string {
+  const parts: string[] = [];
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      const text = typeof msg.content === "string"
+        ? msg.content
+        : Array.isArray(msg.content)
+          ? msg.content
+              .filter((c) => c.type === "text")
+              .map((c) => (c as any).text)
+              .join("\n")
+          : "";
+      parts.push(`[Usuario]: ${text}`);
+    } else if (msg.role === "assistant") {
+      const textBlocks: string[] = [];
+      const toolCalls: string[] = [];
+      for (const block of Array.isArray(msg.content) ? msg.content : []) {
+        if (block.type === "text" && (block as any).text) {
+          textBlocks.push((block as any).text);
+        } else if (block.type === "toolCall") {
+          toolCalls.push(`[${block.name}]`);
+        } else if (block.type === "thinking" && (block as any).thinking) {
+          textBlocks.push(`[Razonamiento]: ${(block as any).thinking}`);
+        }
+      }
+      if (textBlocks.length > 0) {
+        parts.push(`[Asistente]: ${textBlocks.join("\n")}`);
+      }
+      if (toolCalls.length > 0) {
+        parts.push(`[Herramientas]: ${toolCalls.join(", ")}`);
+      }
+    } else if (msg.role === "toolResult") {
+      const tr = msg as ToolResultMessage;
+      const text = typeof tr.content === "string"
+        ? tr.content
+        : Array.isArray(tr.content)
+          ? tr.content
+              .filter((c) => c.type === "text")
+              .map((c) => (c as any).text)
+              .join("\n")
+          : "";
+      // Truncar resultados largos y sanitizar rutas
+      const truncated = text.length > 500 ? text.slice(0, 500) + "..." : text;
+      parts.push(`[Resultado de ${tr.toolName}]: ${truncated}`);
+    }
+  }
+  return parts.join("\n\n");
+}
