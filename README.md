@@ -6,9 +6,9 @@
 
 | Métrica | DeepSeek API directa | CommandCode proxy (crudo) | CommandCode + CleanCache |
 |---------|---------------------|--------------------------|--------------------------|
-| Cache Hit Rate | 87–99 % | ~30 % | **~50 % (pico ~84 % en sesiones largas)** ✅ |
-| Input tokens (query simple) | ~174 | ~16 000 | **~3 000–5 000** ✅ |
-| Coste por iteración | ~$0.001 | ~$0.08 | **~$0.02–0.07** ✅ |
+| Cache Hit Rate (CH) | 90–97 % | ~30 % | **~42–49 %** ✅ |
+| Overhead por turno | ~100–300 tokens | ~16 000 tokens | **~1.5–2k tokens** ✅ |
+| Coste acumulado (4 turnos) | ~$0.002 | ~$0.32 | **~$0.005** ✅ |
 
 CommandCode destruye el prefix caching por tres razones:
 
@@ -26,17 +26,37 @@ El extension registra un provider custom (`cleancache`) con una capa de streamin
 
 Cada request comparte un **prefijo byte‑idéntico** para la parte inmutable del payload. El historial de conversación, por su naturaleza acumulativa, inevitablemente cambia entre turnos, lo que limita el cache hit rate a ~50% en sesiones típicas.
 
-## Resultados reales
+## Resultados reales: CleanCache vs DeepSeek directo
 
-> ⚠️ El prefix caching tiene un límite fundamental: solo cachea desde el byte 0 hasta el primer byte diferente. En una conversación de múltiples turnos, el historial crece y cambia, así que **el 87-99% de la API directa no es alcanzable a través de un proxy**.
+Comparativa controlada con 4 prompts idénticos (`hola`, herramientas, modelo, versión):
 
-| Métrica | Resultado típico | Mejor caso (sesión larga) |
-|---------|-----------------|--------------------------|
-| Cache Hit Rate | ~48–50% | ~84% |
-| Tokens salvados por turno | — | 125k de 148k |
-| Coste por turno (148k tokens) | ~$0.074 | — |
+### CleanCache (CommandCode proxy)
 
-La mejora sobre el proxy crudo (~30% → ~50%) es real pero modesta. Para máximo rendimiento de caché, usa DeepSeek API directamente.
+| Turno | ↑ input | ↓ output | R caché | CH | Coste acum. |
+|-------|---------|----------|---------|------|-------------|
+| 1 (hola) | 1,600 | 82 | 1,500 | 49.2% | $0.001 |
+| 2 (herramientas) | 3,700 | 342 | 3,100 | 42.3% | $0.002 |
+| 3 (modelo) | 6,500 | 454 | 5,100 | 42.3% | $0.003 |
+| 4 (versión) | 9,800 | 640 | 7,800 | 45.0% | $0.005 |
+
+### DeepSeek API directa (sin proxy)
+
+| Turno | ↑ input | ↓ output | R caché | CH | Coste acum. |
+|-------|---------|----------|---------|------|-------------|
+| 1 (hola) | 115 | 106 | 1,800 | 94.0% | $0.000 |
+| 2 (herramientas) | 295 | 372 | 3,600 | 90.9% | $0.000 |
+| 3 (modelo) | 1,300 | 1,200 | 21,000 | 92.8% | $0.002 |
+| 4 (versión) | 1,500 | 1,400 | 27,000 | 97.2% | $0.002 |
+
+### Análisis
+
+- **El proxy de CommandCode añade ~1.5-2k tokens de overhead estructural por turno** (JSON wrapper, metadatos, config) que DeepSeek directo no tiene.
+- Este overhead es inevitable: no depende de CleanCache, sino de la arquitectura de `/alpha/generate`.
+- A pesar del overhead, CleanCache consigue cachear ~80% de los tokens de entrada (R/↑).
+- **El CH más bajo (~45% vs ~95%) no es culpa de CleanCache, sino del overhead del proxy** — la fórmula de Pi es `R/(↑+R)`, y el ↑ inflado por el proxy diluye el porcentaje.
+- **Coste total: $0.005 vs $0.002** (2.5× más con proxy, pero sigue siendo insignificante para 4 turnos).
+
+> ⚠️ **Conclusión:** CleanCache funciona — reduce el overhead del proxy de ~16k a ~1.5k tokens por turno. Pero el proxy siempre añadirá overhead que la API directa no tiene. Para máximo rendimiento de caché y mínimo coste, usa DeepSeek API directamente.
 
 ## Instalación
 
@@ -163,9 +183,10 @@ pi-cleancache-commandcode/
 
 ### 5. Limitaciones conocidas
 
-- **Prefix caching limitado por el historial**: el historial de conversación cambia inevitablemente entre turnos. La parte cacheable es solo el prefijo común (system prompt + tools + headers + config), no los mensajes acumulados.
-- **El proxy de CommandCode no es transparente**: `/alpha/generate` puede añadir metadatos variables fuera de nuestro control.
-- **El padding de 256 tokens se desactivó por defecto**: el tokenizador casero no coincide exactamente con el de DeepSeek y el padding se filtraba a las respuestas visibles.
+- **Overhead estructural del proxy (~1.5-2k tokens/turno):** `/alpha/generate` envuelve cada request en un JSON con campos de configuración y metadatos que la API directa no necesita. CleanCache congela estos campos para que sean cacheables, pero no puede eliminarlos. Es un coste fijo por usar el proxy.
+- **Prefix caching limitado por el historial:** el historial de conversación cambia inevitablemente entre turnos. La parte cacheable es el prefijo común (system prompt + tools + headers + config + historial hasta el punto de divergencia).
+- **CH de Pi penaliza el overhead:** la fórmula `CH = R/(↑+R)` diluye el porcentaje cuando ↑ está inflado por el proxy. El ratio `R/↑` (~80%) es la métrica real de eficiencia de caché.
+- **El padding de 256 tokens está desactivado en mensajes:** el tokenizador casero no coincide exactamente con el de DeepSeek. Solo se aplica padding al system prompt (que es estático y por tanto inofensivo).
 
 ## Comandos
 
