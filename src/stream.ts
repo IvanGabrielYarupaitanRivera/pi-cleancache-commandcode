@@ -37,6 +37,7 @@ import {
   COMMANDCODE_GENERATE_URL,
   STATIC_CONFIG,
   STATIC_SYSTEM_PROMPT,
+  alignMessageForCache,
   buildHeaders,
   freezeTools,
   getModelCost,
@@ -68,10 +69,10 @@ function messagesToCC(messages: readonly Message[]): unknown[] {
     if (msg.role === "user") {
       const content =
         typeof msg.content === "string"
-          ? msg.content
+          ? alignMessageForCache(msg.content)
           : Array.isArray(msg.content)
             ? msg.content.map((c) =>
-                c.type === "text" ? { type: "text", text: sanitise(c.text) } : c,
+                c.type === "text" ? { type: "text", text: alignMessageForCache(sanitise(c.text)) } : c,
               )
             : msg.content;
       out.push({ role: "user", content });
@@ -80,7 +81,7 @@ function messagesToCC(messages: readonly Message[]): unknown[] {
       const content = Array.isArray(msg.content) ? msg.content : [];
       for (const block of content) {
         if (block.type === "text" && block.text) {
-          parts.push({ type: "text", text: sanitise(block.text) });
+          parts.push({ type: "text", text: alignMessageForCache(sanitise(block.text)) });
         } else if (block.type === "thinking" && (block as any).thinking) {
           parts.push({ type: "reasoning", text: sanitise((block as any).thinking) });
         } else if (block.type === "toolCall") {
@@ -103,8 +104,8 @@ function messagesToCC(messages: readonly Message[]): unknown[] {
             toolCallId: tr.toolCallId,
             toolName: tr.toolName,
             output: tr.isError
-              ? { type: "error-text", value: extractText(tr) }
-              : { type: "text", value: extractText(tr) },
+              ? { type: "error-text", value: alignMessageForCache(extractText(tr)) }
+              : { type: "text", value: alignMessageForCache(extractText(tr)) },
           },
         ],
       });
@@ -172,51 +173,7 @@ function cleanHistoryForCache(messages: readonly Message[]): Message[] {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Aplica padding de 256 tokens SOLO al ÚLTIMO mensaje, calculando el residuo
-// GLOBAL del payload completo (system prompt + historial inmutable + último
-// mensaje). Si calculáramos el residuo solo del último mensaje, el historial
-// acumulado (que puede no ser múltiplo de 256) desalinearía todo el payload.
-// ---------------------------------------------------------------------------
-function applyMessagePadding(messages: unknown[], paddedSystem: string): void {
-  if (messages.length === 0) return;
 
-  // 1. Contar tokens del system prompt (ya viene con padding a 256)
-  let tokensTotales = countTokens(paddedSystem);
-
-  // 2. Sumar todos los mensajes serializados EXCEPTO el último
-  for (let i = 0; i < messages.length - 1; i++) {
-    tokensTotales += countTokens(deterministicStringify(messages[i]));
-  }
-
-  // 3. Sumar el último mensaje (sin padding aún)
-  const ultimoMensaje = messages[messages.length - 1] as any;
-  tokensTotales += countTokens(deterministicStringify(ultimoMensaje));
-
-  // 4. Calcular residuo global frente al bloque de 256
-  const residuoGlobal = tokensTotales % 256;
-  if (residuoGlobal === 0) return; // Ya está perfectamente alineado
-
-  const tokensFaltantes = 256 - residuoGlobal;
-
-  // 5. Inyectar padding EXCLUSIVAMENTE al final del último mensaje
-  const paddingString = `\n/* CC-PAD: ${"0".repeat(Math.max(0, tokensFaltantes * 3 - 14))} */`;
-  if (typeof ultimoMensaje.content === "string") {
-    ultimoMensaje.content = ultimoMensaje.content + paddingString;
-  } else if (Array.isArray(ultimoMensaje.content)) {
-    let lastTextIdx = -1;
-    for (let i = ultimoMensaje.content.length - 1; i >= 0; i--) {
-      if (ultimoMensaje.content[i].type === "text") {
-        lastTextIdx = i;
-        break;
-      }
-    }
-    if (lastTextIdx >= 0) {
-      ultimoMensaje.content[lastTextIdx].text =
-        (ultimoMensaje.content[lastTextIdx].text || "") + paddingString;
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Main stream function
@@ -274,9 +231,6 @@ export function streamCommandCode(
 
       // 3. System prompt: estático + padding a 256 tokens
       const paddedSystem = promptTo256Padding(STATIC_SYSTEM_PROMPT);
-
-      // 4. Padding 256 tokens — residuo GLOBAL (solo último mensaje)
-      applyMessagePadding(ccMessages, paddedSystem);
 
       const params: Record<string, any> = {
         model: model.id,
