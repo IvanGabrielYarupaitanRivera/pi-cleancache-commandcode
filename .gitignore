@@ -2,3 +2,18 @@ node_modules/
 dist/
 .env
 *.tsbuildinfo
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Results / logs
+benchmark/results/
+
+# CommandCode artifacts
+.commandcode/

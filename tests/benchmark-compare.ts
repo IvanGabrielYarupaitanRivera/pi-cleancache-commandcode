@@ -18,9 +18,11 @@
  *   Turn 1 is warm-up (fills cache). Turns 2-N show cache benefit.
  */
 
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 
+const execAsync = promisify(exec);
 // ── Config ──────────────────────────────────────────────────────────
 const PROJECT_DIR = resolve(process.cwd());
 const EXTENSION = resolve(PROJECT_DIR, "src/index.ts");
@@ -122,11 +124,11 @@ function formatUsage(u: Usage): string {
   );
 }
 
-function runPi(
+async function runPi(
   config: ProviderConfig,
   prompt: string,
   runLabel: string,
-): RunResult {
+): Promise<RunResult> {
   const extFlag = config.useExtension ? `-e "${EXTENSION}"` : "";
   const cmd = `pi --mode json ${extFlag} --model "${config.model}" -p "${prompt}" 2>&1`;
 
@@ -134,7 +136,7 @@ function runPi(
   const start = Date.now();
 
   try {
-    const raw = execSync(cmd, {
+    const { stdout: raw } = await execAsync(cmd, {
       cwd: PROJECT_DIR,
       encoding: "utf-8",
       timeout: 120_000,
@@ -184,7 +186,7 @@ async function main() {
 
     for (let i = 0; i < TOTAL_RUNS; i++) {
       const label = i < WARMUP_RUNS ? `warm-up` : `#${i - WARMUP_RUNS + 1}`;
-      const result = runPi(config, TEST_PROMPT, label);
+      const result = await runPi(config, TEST_PROMPT, label);
       result.run = i + 1;
       runs.push(result);
     }

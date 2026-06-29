@@ -46,6 +46,192 @@ import { cleanHistoryForCache } from "./history-cleaner.js";
 const SESSION_THREAD_ID = randomUUID();
 
 // ---------------------------------------------------------------------------
+// SSE event processor — encapsulates mutable streaming state
+// ---------------------------------------------------------------------------
+
+class SSEProcessor {
+  private textBlock: { type: "text"; text: string } | undefined;
+  private textIdx = -1;
+  private thinkingIdx = -1;
+
+  constructor(
+    private readonly stream: AssistantMessageEventStream,
+    private readonly output: AssistantMessage,
+    private readonly model: Model<any>,
+  ) {}
+
+  emitStart(): void {
+    this.stream.push({ type: "start", partial: this.output });
+  }
+
+  emitDone(): void {
+    if (this.output.stopReason === "stop" && this.output.content.length === 0) {
+      this.output.stopReason = "stop";
+    }
+    this.stream.push({
+      type: "done",
+      reason: this.output.stopReason as "stop" | "length" | "toolUse",
+      message: this.output,
+    });
+    this.stream.end();
+  }
+
+  emitError(error: unknown): void {
+    this.output.stopReason = "error";
+    this.output.errorMessage =
+      error instanceof Error ? error.message : String(error);
+    this.stream.push({ type: "error", reason: this.output.stopReason, error: this.output });
+    this.stream.end();
+  }
+
+  private endText(): void {
+    if (this.textBlock) {
+      this.stream.push({
+        type: "text_end",
+        contentIndex: this.textIdx,
+        content: this.textBlock.text,
+        partial: this.output,
+      });
+      this.textBlock = undefined;
+      this.textIdx = -1;
+    }
+  }
+
+  private endThinking(): void {
+    if (this.thinkingIdx >= 0) {
+      this.stream.push({
+        type: "thinking_end",
+        contentIndex: this.thinkingIdx,
+        content:
+          (this.output.content[this.thinkingIdx] as any)?.thinking ?? "",
+        partial: this.output,
+      });
+      this.thinkingIdx = -1;
+    }
+  }
+
+  /** Process a single SSE event. Returns true when the stream signals finish. */
+  handleEvent(evt: CCEvent): boolean {
+    switch (evt.type) {
+      case "text-delta": {
+        this.endThinking();
+        if (!this.textBlock) {
+          this.textBlock = { type: "text", text: "" };
+          this.output.content.push(this.textBlock);
+          this.textIdx = this.output.content.length - 1;
+          this.stream.push({
+            type: "text_start",
+            contentIndex: this.textIdx,
+            partial: this.output,
+          });
+        }
+        const delta = evt.text ?? "";
+        this.textBlock.text += delta;
+        this.stream.push({
+          type: "text_delta",
+          contentIndex: this.textIdx,
+          delta,
+          partial: this.output,
+        });
+        return false;
+      }
+
+      case "reasoning-start": {
+        this.endText();
+        return false;
+      }
+
+      case "reasoning-delta": {
+        this.endText();
+        const delta = evt.text ?? "";
+        if (this.thinkingIdx < 0) {
+          this.output.content.push({
+            type: "thinking",
+            thinking: delta,
+          } as any);
+          this.thinkingIdx = this.output.content.length - 1;
+          this.stream.push({
+            type: "thinking_start",
+            contentIndex: this.thinkingIdx,
+            partial: this.output,
+          });
+        } else {
+          const tc = this.output.content[this.thinkingIdx] as any;
+          if (tc) tc.thinking = (tc.thinking ?? "") + delta;
+        }
+        this.stream.push({
+          type: "thinking_delta",
+          contentIndex: this.thinkingIdx,
+          delta,
+          partial: this.output,
+        });
+        return false;
+      }
+
+      case "reasoning-end": {
+        this.endThinking();
+        return false;
+      }
+
+      case "tool-call": {
+        this.endText();
+        this.endThinking();
+        const toolCall = {
+          type: "toolCall" as const,
+          id: evt.toolCallId ?? "",
+          name: evt.toolName ?? "",
+          arguments: resolveToolArgs(evt),
+        };
+        this.output.content.push(toolCall);
+        const idx = this.output.content.length - 1;
+        this.stream.push({
+          type: "toolcall_start",
+          contentIndex: idx,
+          partial: this.output,
+        });
+        this.stream.push({
+          type: "toolcall_end",
+          contentIndex: idx,
+          toolCall,
+          partial: this.output,
+        });
+        return false;
+      }
+
+      case "tool-result": {
+        return false;
+      }
+
+      case "finish": {
+        const usage = evt.totalUsage;
+        if (usage) {
+          populateUsage(this.output, this.model, usage);
+        }
+        this.output.stopReason = mapFinishReason(evt.finishReason);
+        return true;
+      }
+
+      case "error": {
+        const errMsg =
+          typeof evt.error === "string"
+            ? evt.error
+            : (evt.error as any)?.message ?? "Stream error";
+        throw new Error(errMsg);
+      }
+
+      default:
+        return false;
+    }
+  }
+
+  /** Flush any pending text/thinking blocks. */
+  finalize(): void {
+    this.endText();
+    this.endThinking();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -55,61 +241,79 @@ export function streamCommandCode(
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
+  const output = createEmptyOutput(model);
 
+  // Run the async lifecycle in the background, emitting events to the stream.
+  // Errors are already handled inside runStreamLifecycle; we silence unhandled
+  // rejections here since they would be a double-report.
   (async () => {
-    const output = createEmptyOutput(model);
-
     try {
-      const apiKey = resolveApiKey(options);
-
-      // 1. Build request payload
-      const body = buildRequestBody(model, context, options);
-      const bodyStr = deterministicStringify(body);
-
-      logPayloadTelemetry(bodyStr);
-
-      // 2. HTTP POST
-      const response = await fetch(COMMANDCODE_GENERATE_URL, {
-        method: "POST",
-        headers: buildHeaders(apiKey),
-        body: bodyStr,
-        signal: options?.signal,
-      });
-
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => "");
-        throw new Error(
-          `CommandCode API error ${response.status}: ${errBody.slice(0, 500)}`,
-        );
-      }
-
-      // 3. Read SSE stream
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("No response body");
-
-      await processSSEStream(reader, stream, output, model);
-
-      // Finalize
-      if (output.stopReason === "stop" && output.content.length === 0) {
-        output.stopReason = "stop";
-      }
-
-      stream.push({
-        type: "done",
-        reason: output.stopReason as "stop" | "length" | "toolUse",
-        message: output,
-      });
-      stream.end();
-    } catch (error) {
-      output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-      output.errorMessage =
-        error instanceof Error ? error.message : String(error);
-      stream.push({ type: "error", reason: output.stopReason, error: output });
-      stream.end();
+      await runStreamLifecycle(stream, output, model, context, options);
+    } catch {
+      // Error already handled inside runStreamLifecycle
     }
   })();
 
   return stream;
+}
+
+// ---------------------------------------------------------------------------
+// Async stream lifecycle
+// ---------------------------------------------------------------------------
+
+async function runStreamLifecycle(
+  stream: AssistantMessageEventStream,
+  output: AssistantMessage,
+  model: Model<any>,
+  context: Context,
+  options?: SimpleStreamOptions,
+): Promise<void> {
+  const processor = new SSEProcessor(stream, output, model);
+
+  try {
+    const apiKey = resolveApiKey(options);
+
+    // 1. Build request payload
+    const body = buildRequestBody(model, context, options);
+    const bodyStr = deterministicStringify(body);
+
+    logPayloadTelemetry(bodyStr);
+
+    // 2. HTTP POST
+    const response = await fetch(COMMANDCODE_GENERATE_URL, {
+      method: "POST",
+      headers: buildHeaders(apiKey),
+      body: bodyStr,
+      signal: options?.signal,
+    });
+
+    if (!response.ok) {
+      let errBody = "";
+      try {
+        errBody = await response.text();
+      } catch {
+        // ignore parse failure
+      }
+      throw new Error(
+        `CommandCode API error ${response.status}: ${errBody.slice(0, 500)}`,
+      );
+    }
+
+    // 3. Read SSE stream
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    await processSSEStream(reader, processor);
+
+    // Finalize
+    processor.finalize();
+    processor.emitDone();
+  } catch (error) {
+    if (options?.signal?.aborted) {
+      output.stopReason = "aborted";
+    }
+    processor.emitError(error);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,159 +373,12 @@ function buildRequestBody(
 
 async function processSSEStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  stream: AssistantMessageEventStream,
-  output: AssistantMessage,
-  model: Model<any>,
+  processor: SSEProcessor,
 ): Promise<void> {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  // Mutable state shared with event handler
-  let textBlock: { type: "text"; text: string } | undefined;
-  let textIdx = -1;
-  let thinkingIdx = -1;
-
-  const endText = () => {
-    if (textBlock) {
-      stream.push({
-        type: "text_end",
-        contentIndex: textIdx,
-        content: textBlock.text,
-        partial: output,
-      });
-      textBlock = undefined;
-      textIdx = -1;
-    }
-  };
-
-  const endThinking = () => {
-    if (thinkingIdx >= 0) {
-      stream.push({
-        type: "thinking_end",
-        contentIndex: thinkingIdx,
-        content:
-          (output.content[thinkingIdx] as any)?.thinking ?? "",
-        partial: output,
-      });
-      thinkingIdx = -1;
-    }
-  };
-
-  // Event handler closes over the shared state
-  const handleEvent = (evt: CCEvent): boolean => {
-    switch (evt.type) {
-      case "text-delta": {
-        endThinking();
-        if (!textBlock) {
-          textBlock = { type: "text", text: "" };
-          output.content.push(textBlock);
-          textIdx = output.content.length - 1;
-          stream.push({
-            type: "text_start",
-            contentIndex: textIdx,
-            partial: output,
-          });
-        }
-        const delta = evt.text ?? "";
-        textBlock.text += delta;
-        stream.push({
-          type: "text_delta",
-          contentIndex: textIdx,
-          delta,
-          partial: output,
-        });
-        return false;
-      }
-
-      case "reasoning-start": {
-        endText();
-        return false;
-      }
-
-      case "reasoning-delta": {
-        endText();
-        const delta = evt.text ?? "";
-        if (thinkingIdx < 0) {
-          output.content.push({
-            type: "thinking",
-            thinking: delta,
-          } as any);
-          thinkingIdx = output.content.length - 1;
-          stream.push({
-            type: "thinking_start",
-            contentIndex: thinkingIdx,
-            partial: output,
-          });
-        } else {
-          const tc = output.content[thinkingIdx] as any;
-          if (tc) tc.thinking = (tc.thinking ?? "") + delta;
-        }
-        stream.push({
-          type: "thinking_delta",
-          contentIndex: thinkingIdx,
-          delta,
-          partial: output,
-        });
-        return false;
-      }
-
-      case "reasoning-end": {
-        endThinking();
-        return false;
-      }
-
-      case "tool-call": {
-        endText();
-        endThinking();
-        const toolCall = {
-          type: "toolCall" as const,
-          id: evt.toolCallId ?? "",
-          name: evt.toolName ?? "",
-          arguments: resolveToolArgs(evt),
-        };
-        output.content.push(toolCall);
-        const idx = output.content.length - 1;
-        stream.push({
-          type: "toolcall_start",
-          contentIndex: idx,
-          partial: output,
-        });
-        stream.push({
-          type: "toolcall_end",
-          contentIndex: idx,
-          toolCall,
-          partial: output,
-        });
-        return false;
-      }
-
-      case "tool-result": {
-        return false;
-      }
-
-      case "finish": {
-        const usage = evt.totalUsage;
-        if (usage) {
-          populateUsage(output, model, usage);
-        }
-        output.stopReason = mapFinishReason(evt.finishReason);
-        return true;
-      }
-
-      case "error": {
-        const errMsg =
-          typeof evt.error === "string"
-            ? evt.error
-            : (evt.error as any)?.message ?? "Stream error";
-        throw new Error(errMsg);
-      }
-
-      default:
-        return false;
-    }
-  };
-
-  stream.push({ type: "start", partial: output });
+  processor.emitStart();
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -329,7 +386,7 @@ async function processSSEStream(
       // Flush final buffer
       if (buffer.trim()) {
         const evt = parseEventLine(buffer);
-        if (evt) handleEvent(evt);
+        if (evt) processor.handleEvent(evt);
       }
       break;
     }
@@ -339,17 +396,14 @@ async function processSSEStream(
     for (const line of lines) {
       const evt = parseEventLine(line);
       if (evt) {
-        const shouldStop = handleEvent(evt);
+        const shouldStop = processor.handleEvent(evt);
         if (shouldStop) {
-          await reader.cancel().catch(() => {});
+          try { await reader.cancel(); } catch { /* ignore */ }
           break;
         }
       }
     }
   }
-
-  endText();
-  endThinking();
 }
 
 // ---------------------------------------------------------------------------

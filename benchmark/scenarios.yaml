@@ -1,0 +1,20 @@
+# scenarios.yaml — 10 prompts de benchmark (3 categorias)
+# Cada prompt se ejecuta N veces; se reporta mediana.
+
+short:
+  - "List the files in the current directory and describe their purpose in one line."
+  - "What is 2+2? Explain your reasoning."
+  - "Write a one-line bash command to find all files modified in the last 24 hours."
+
+medium:
+  - "Write a Python function that takes a list of integers and returns the longest increasing subsequence. Include tests."
+  - "Explain the difference between REST and GraphQL in terms of caching, versioning, and over-fetching."
+  - "Refactor this JavaScript callback chain into async/await:\n\nfunction loadUser(id, cb) {\n  db.find(id, (err, user) => {\n    if (err) return cb(err);\n    db.getPosts(user.id, (err, posts) => {\n      if (err) return cb(err);\n      cb(null, { user, posts });\n    });\n  });\n}"
+  - "Compare SQLite vs PostgreSQL. When would you choose each? Give 3 pros and 3 cons for each."
+
+long:
+  - "Write a complete Express.js CRUD API for a blog with the following requirements:\n- MongoDB with Mongoose\n- GET /posts, GET /posts/:id, POST /posts, PUT /posts/:id, DELETE /posts/:id\n- Input validation with Joi\n- Error handling middleware\n- Pagination support (page, limit query params)\n- Sort by createdAt desc\nInclude the full code."
+  - "Analyze this code and suggest improvements:\n\nclass DataProcessor {\n  constructor(data) {\n    this.data = data;\n    this.results = [];\n  }\n  process() {\n    for (let i = 0; i < this.data.length; i++) {\n      if (this.data[i].type === 'a') {\n        this.results.push(this.transformA(this.data[i]));\n      } else if (this.data[i].type === 'b') {\n        this.results.push(this.transformB(this.data[i]));\n      } else {\n        this.results.push(this.transformDefault(this.data[i]));\n      }\n    }\n    return this.results;\n  }\n}\n\nCover: performance, readability, testability, error handling, extensibility."
+  - "Design a rate limiter for a distributed system. Explain:\n1. The algorithm (token bucket / sliding window / etc.)\n2. How you'd store state (Redis? Local memory?)\n3. How to handle race conditions\n4. How to scale across multiple nodes\n5. Provide pseudocode for the core logic."
+
+# Total: 10 prompts (3 short + 4 medium + 3 long)
