@@ -15,6 +15,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   type AssistantMessage,
@@ -279,6 +281,8 @@ async function runStreamLifecycle(
 
     logPayloadTelemetry(bodyStr);
 
+    savePayloadForDebug(body, bodyStr);
+
     // 2. HTTP POST
     const response = await fetch(COMMANDCODE_GENERATE_URL, {
       method: "POST",
@@ -494,6 +498,58 @@ function populateUsage(
     output.usage.cost.output +
     output.usage.cost.cacheRead +
     output.usage.cost.cacheWrite;
+}
+
+// ---------------------------------------------------------------------------
+// Payload debugger — guarda el payload a disco para analizar el overhead
+// ---------------------------------------------------------------------------
+const debugDir = process.env["CC_DEBUG_DIR"] || "";
+
+function savePayloadForDebug(body: Record<string, unknown>, bodyStr: string): void {
+  const dir = debugDir || (() => {
+    const home = process.env["USERPROFILE"] || process.env["HOME"] || "";
+    if (!home) return "";
+    const p = join(home, "Desktop", "cc-payload-debug");
+    if (!existsSync(p)) mkdirSync(p, { recursive: true });
+    return p;
+  })();
+  if (!dir) return;
+  const params = body.params as Record<string, any> | undefined;
+  const breakdown: Record<string, number> = {
+    config_json: jsonLen(body.config),
+    memory_json: jsonLen(body.memory),
+    taste_json: jsonLen(body.taste),
+    skills_json: jsonLen(body.skills),
+    threadId_json: jsonLen(body.threadId),
+    cache_prompt_json: jsonLen(body.cache_prompt),
+    disable_backend_formatting_json: jsonLen(body.disable_backend_formatting),
+    params_system: jsonLen(params?.system),
+    params_messages: jsonLen(params?.messages),
+    params_tools: jsonLen(params?.tools),
+    params_model: jsonLen(params?.model),
+    params_max_tokens: jsonLen(params?.max_tokens),
+    params_temperature: jsonLen(params?.temperature),
+    params_stream: jsonLen(params?.stream),
+    params_thinking: jsonLen(params?.thinking),
+  };
+  const summary = {
+    timestamp: new Date().toISOString(),
+    total_tokens: countTokens(bodyStr),
+    total_chars: bodyStr.length,
+    num_tools: params?.tools?.length ?? 0,
+    num_messages: params?.messages?.length ?? 0,
+    aligned_to_256: countTokens(bodyStr) % 256 === 0,
+    breakdown_chars: breakdown,
+  };
+  const filename = join(dir, "payload-" + Date.now() + ".json");
+  writeFileSync(filename, JSON.stringify({ summary, payload: body }, null, 2), "utf-8");
+  console.log("[36m[CleanCache][0m Payload saved: " + filename);
+  console.log("[36m[CleanCache][0m Breakdown: tools=" + breakdown.params_tools + " chars, messages=" + breakdown.params_messages + " chars, system=" + breakdown.params_system + " chars");
+}
+
+function jsonLen(val: unknown): number {
+  if (val === null || val === undefined) return 0;
+  try { return JSON.stringify(val).length; } catch { return 0; }
 }
 
 function mapFinishReason(
